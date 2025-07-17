@@ -1,0 +1,107 @@
+name: Build Xroger DOS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm mtools dosfstools
+
+      - name: Create boot sector
+        run: |
+          cat > boot.asm << 'EOF'
+          [BITS 16]
+          [ORG 0x7C00]
+          
+          start:
+              ; セットアップ
+              cli
+              mov ax, 0x0000
+              mov ss, ax
+              mov sp, 0x7C00
+              sti
+              
+              ; 画面クリア
+              mov ax, 0x0600
+              mov bh, 0x07
+              mov cx, 0x0000
+              mov dx, 0x184F
+              int 0x10
+              
+              ; メッセージ表示
+              mov si, msg
+              call print_string
+              
+              jmp $
+          
+          print_string:
+              lodsb
+              or al, al
+              jz .done
+              mov ah, 0x0E
+              int 0x10
+              jmp print_string
+          .done:
+              ret
+          
+          msg db 'Xroger DOS v1.0', 13, 10
+              db 'Created by GitHub Actions', 13, 10
+              db 'Copyright (c) 2025', 13, 10, 0
+          
+          times 510-($-$$) db 0
+          dw 0xAA55
+          EOF
+          
+          nasm -f bin boot.asm -o boot.bin
+
+      - name: Create HDI image
+        run: |
+          # Create a 1.44MB HDI file
+          dd if=/dev/zero of=xroger.hdi bs=1k count=1440
+          
+          # Format the image with FAT12
+          mkfs.fat -F 12 xroger.hdi
+          
+          # Write boot sector
+          dd if=boot.bin of=xroger.hdi conv=notrunc
+
+      - name: Create system files
+        run: |
+          mkdir -p tmpdisk
+          sudo mount -o loop xroger.hdi tmpdisk
+          
+          # Create simple system files
+          echo "This is XROGER.SYS" > tmpdisk/XROGER.SYS
+          echo "CONFIG.SYS for Xroger DOS" > tmpdisk/CONFIG.SYS
+          echo "AUTOEXEC.BAT for Xroger DOS" > tmpdisk/AUTOEXEC.BAT
+          
+          sudo umount tmpdisk
+
+      - name: Upload HDI file
+        uses: actions/upload-artifact@v3
+        with:
+          name: xroger-dos
+          path: xroger.hdi
+          
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/heads/main')
+        with:
+          files: xroger.hdi
+          name: Xroger DOS Release
+          tag_name: v1.0.${{ github.run_number }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
