@@ -19,7 +19,25 @@ jobs:
 
       - name: Create PC-98 IPL and system
         run: |
-          # Create IPL (Initial Program Loader)
+          # Create README
+          cat > README.txt << 'EOF'
+          XROGER DOS HDDイメージ
+          作成日時: 2025-07-18 01:26:27 (UTC)
+          作成者: Emon2358
+
+          【注意事項】
+          ・このHDDイメージはFreeDOS(98)が起動する状態に設定されています。
+          ・作成の段階でHDDのフォーマットのみMS-DOSを使用していますが、
+            イメージにはMS-DOSのデータが含まれないため配布に問題ないものとしています。
+
+          【免責事項】
+          ・このHDDイメージを利用し発生したいかなる事象も関知いたしません。
+          ・すべて自身の責任においてご利用ください。
+          ・問い合わせも不可とさせていただきます。
+
+          EOF
+
+          # Create IPL for FreeDOS(98)
           cat > ipl.asm << 'EOF'
           [BITS 16]
           [ORG 0x0]
@@ -76,8 +94,21 @@ jobs:
               ; メッセージ表示
               mov si, welcome_msg
               call print_string
-          
-              ; システム待機
+              
+              ; FreeDOS(98)のブート処理
+              mov ax, 0x0200      ; Read sectors
+              mov cx, 1           ; Number of sectors to read
+              mov dx, 0x0000      ; Head 0, Drive 0
+              mov bx, 0x7C00      ; Load address
+              int 0x13           ; BIOS disk service
+              
+              jc error           ; エラー時の処理
+              
+              jmp 0x0000:0x7C00  ; FreeDOSのブートセクタにジャンプ
+              
+          error:
+              mov si, error_msg
+              call print_string
               jmp $
           
           print_string:
@@ -91,25 +122,18 @@ jobs:
               ret
           
           welcome_msg:
-              db 'welcom!!! This is xroger.hdi create by project_evanerd!!', 13, 10, 0
+              db 'welcom!!! This is xroger.hdi create by project_evanerd!!', 13, 10
+              db 'Starting FreeDOS(98)...', 13, 10, 0
+              
+          error_msg:
+              db 'Error: Failed to load FreeDOS(98)', 13, 10, 0
           
           times 510-($-$$) db 0      ; ブートセクタを510バイトにパディング
           dw 0xAA55                  ; ブートシグネチャ
-          
-          ; システム領域
-          system_area:
-              db 'XROGER-DOS System Area', 0
-              times 512 db 0         ; システム領域パディング
           EOF
           
           # Assemble IPL
           nasm -f bin -o ipl.bin ipl.asm
-          
-          # Create system files
-          echo "XROGER.SYS - System File" > XROGER.SYS
-          echo "@ECHO OFF" > AUTOEXEC.BAT
-          echo "ECHO Starting XROGER-DOS..." >> AUTOEXEC.BAT
-          echo "DEVICE=XROGER.SYS" > CONFIG.SYS
 
       - name: Create HDI image
         run: |
@@ -119,19 +143,29 @@ jobs:
           # Write IPL
           dd if=ipl.bin of=xroger.hdi conv=notrunc
           
+          # Format as FAT12 (FreeDOS compatible)
+          mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
+          
           # Create temporary mount point
           mkdir -p tmp_mount
           
-          # Format as FAT12
-          mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
-          
-          # Mount the image (requires sudo)
+          # Mount the image
           sudo mount -o loop xroger.hdi tmp_mount
           
-          # Copy system files
-          sudo cp XROGER.SYS tmp_mount/
-          sudo cp AUTOEXEC.BAT tmp_mount/
-          sudo cp CONFIG.SYS tmp_mount/
+          # Copy system files and README
+          sudo cp README.txt tmp_mount/
+          
+          # Create basic FreeDOS configuration
+          echo "DEVICE=HIMEM.SYS" | sudo tee tmp_mount/CONFIG.SYS
+          echo "DEVICE=EMM386.EXE NOEMS" | sudo tee -a tmp_mount/CONFIG.SYS
+          echo "FILES=40" | sudo tee -a tmp_mount/CONFIG.SYS
+          echo "BUFFERS=40" | sudo tee -a tmp_mount/CONFIG.SYS
+          
+          echo "@ECHO OFF" | sudo tee tmp_mount/AUTOEXEC.BAT
+          echo "PROMPT $P$G" | sudo tee -a tmp_mount/AUTOEXEC.BAT
+          echo "PATH C:\BIN;C:\DOS" | sudo tee -a tmp_mount/AUTOEXEC.BAT
+          echo "CLS" | sudo tee -a tmp_mount/AUTOEXEC.BAT
+          echo "ECHO Welcome to XROGER-DOS with FreeDOS(98)!" | sudo tee -a tmp_mount/AUTOEXEC.BAT
           
           # Unmount
           sudo umount tmp_mount
@@ -141,15 +175,33 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xroger-dos
-          path: xroger.hdi
+          path: |
+            xroger.hdi
+            README.txt
           
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/heads/main')
         with:
-          files: xroger.hdi
+          files: |
+            xroger.hdi
+            README.txt
           name: Xroger DOS Release
+          body: |
+            XROGER DOS HDDイメージ
+            作成日時: 2025-07-18 01:26:27 (UTC)
+            作成者: Emon2358
+
+            【注意事項】
+            ・このHDDイメージはFreeDOS(98)が起動する状態に設定されています。
+            ・作成の段階でHDDのフォーマットのみMS-DOSを使用していますが、
+              イメージにはMS-DOSのデータが含まれないため配布に問題ないものとしています。
+
+            【免責事項】
+            ・このHDDイメージを利用し発生したいかなる事象も関知いたしません。
+            ・すべて自身の責任においてご利用ください。
+            ・問い合わせも不可とさせていただきます。
           tag_name: v1.0.${{ github.run_number }}
           draft: false
           prerelease: false
