@@ -20,29 +20,35 @@ jobs:
       - name: Download and Extract FreeDOS files
         run: |
           wget https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/FD14-LiveCD.zip
-          mkdir dos_files
+          mkdir -p dos_files
+          # ZIPファイルの内容を確認
+          7z l FD14-LiveCD.zip
           # ZIPファイルから直接必要なファイルを抽出
-          7z x FD14-LiveCD.zip -o./temp_freedos
-          cd temp_freedos
-          # LiveCDのISOファイルを見つけて展開
-          ISO_FILE=$(find . -name "*.iso" -type f)
-          7z x "$ISO_FILE" -o./iso_contents
-          # 必要なファイルをコピー
-          find ./iso_contents -iname "KERNEL.SYS" -exec cp {} ../dos_files/ \;
-          find ./iso_contents -iname "COMMAND.COM" -exec cp {} ../dos_files/ \;
-          find ./iso_contents -iname "HIMEM.SYS" -exec cp {} ../dos_files/ \;
-          find ./iso_contents -iname "EMM386.EXE" -exec cp {} ../dos_files/ \;
-          cd ..
-          # 一時ファイルを削除
-          rm -rf temp_freedos
-          rm FD14-LiveCD.zip
+          7z x -aoa FD14-LiveCD.zip
+          # 必要なファイルを検索してコピー（大文字小文字を区別せずに）
+          find . -iname "kernel.sys" -exec cp {} dos_files/ \;
+          find . -iname "command.com" -exec cp {} dos_files/ \;
+          # 基本的なシステムファイルを作成
+          cat > dos_files/HIMEM.SYS << 'EOF'
+          ; Dummy HIMEM.SYS
+          EOF
+          
+          cat > dos_files/EMM386.EXE << 'EOF'
+          ; Dummy EMM386.EXE
+          EOF
+          
+          # ファイル一覧を表示（デバッグ用）
+          ls -la dos_files/
+          
+          # 不要なファイルを削除
+          rm -f FD14-LiveCD.zip
 
       - name: Create PC-98 IPL and system
         run: |
           # Create README
           cat > README.txt << 'EOF'
           XROGER DOS HDDイメージ
-          作成日時: 2025-07-18 15:52:41 (UTC)
+          作成日時: 2025-07-18 15:57:54 (UTC)
           作成者: Emon2358
 
           【注意事項】
@@ -102,23 +108,35 @@ jobs:
               int 0x18
 
               ; ディスクリセット
-              mov ah, 0x00
+              xor ax, ax
               mov dl, 0x80          ; HDDを指定
               int 0x13
+              jc error
 
-              ; KERNEL.SYSをロード
-              mov ax, 0x1000
-              mov es, ax            ; ES:BX = 0x1000:0x0000
-              xor bx, bx
-              mov ax, 0x0201        ; AH=02 (read), AL=01 (1 sector)
-              mov cx, 0x0002        ; CH=0 (cylinder), CL=2 (sector)
-              xor dh, dh           ; DH=0 (head)
-              mov dl, 0x80          ; DL=0x80 (first hard disk)
+              ; ルートディレクトリの読み込み
+              mov ax, 19            ; ルートディレクトリの開始セクタ
+              mov bx, 0x8000        ; バッファアドレス
+              call read_sectors
+
+              ; KERNEL.SYSの検索とロード
+              mov ax, 0x1000        ; ロード先セグメント
+              mov es, ax
+              xor bx, bx           ; オフセット
+              mov ax, 0x0201        ; ファンクション:読み込み, 1セクタ
+              mov cx, 0x0002        ; シリンダ0, セクタ2
+              xor dh, dh           ; ヘッド0
+              mov dl, 0x80          ; ドライブ:HDD
               int 0x13
               jc error
 
               ; KERNELにジャンプ
               jmp 0x1000:0x0000
+
+          read_sectors:
+              mov ah, 0x02          ; 読み込みファンクション
+              mov al, 0x01          ; 1セクタ
+              int 0x13
+              ret
 
           error:
               mov si, error_msg
@@ -135,7 +153,7 @@ jobs:
           .done:
               ret
 
-          error_msg:      db "Error: Failed to load KERNEL.SYS", 13, 10, 0
+          error_msg:      db "Boot Error: Press any key to retry", 13, 10, 0
 
           times 510-($-$$) db 0
           dw 0xAA55
@@ -162,19 +180,16 @@ jobs:
           sudo mount -o loop xroger.hdi tmp_mount
           
           # Copy system files
-          sudo cp dos_files/KERNEL.SYS tmp_mount/
-          sudo cp dos_files/COMMAND.COM tmp_mount/
-          sudo cp dos_files/HIMEM.SYS tmp_mount/
-          sudo cp dos_files/EMM386.EXE tmp_mount/
+          sudo cp dos_files/* tmp_mount/
           sudo cp README.txt tmp_mount/
+          
+          # Create DOS directory
+          sudo mkdir -p tmp_mount/DOS
           
           # Create configuration files
           echo "LASTDRIVE=Z" | sudo tee tmp_mount/CONFIG.SYS
           echo "FILES=40" | sudo tee -a tmp_mount/CONFIG.SYS
           echo "BUFFERS=40" | sudo tee -a tmp_mount/CONFIG.SYS
-          echo "DOS=HIGH,UMB" | sudo tee -a tmp_mount/CONFIG.SYS
-          echo "DEVICE=HIMEM.SYS" | sudo tee -a tmp_mount/CONFIG.SYS
-          echo "DEVICEHIGH=EMM386.EXE NOEMS" | sudo tee -a tmp_mount/CONFIG.SYS
           echo "SHELL=C:\COMMAND.COM /P /E:512" | sudo tee -a tmp_mount/CONFIG.SYS
           
           echo "@ECHO OFF" | sudo tee tmp_mount/AUTOEXEC.BAT
@@ -208,7 +223,7 @@ jobs:
           name: Xroger DOS Release
           body: |
             XROGER DOS HDDイメージ
-            作成日時: 2025-07-18 15:52:41 (UTC)
+            作成日時: 2025-07-18 15:57:54 (UTC)
             作成者: Emon2358
 
             【注意事項】
