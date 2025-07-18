@@ -17,103 +17,138 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nasm dosfstools
 
-      - name: Create PC-98 bootloader
+      - name: Create PC-98 system disk
         run: |
-          cat > boot.asm << 'EOF'
+          # IPLとシステムローダーの作成
+          cat > ipl.asm << 'EOF'
           [BITS 16]
           [ORG 0x0100]
           
-              jmp short start
-            nop
-            
-          ; BPB (BIOS Parameter Block)
-          OEMLabel        db "XROGERDOS"  ; 8 bytes
-          BytesPerSector  dw 512
-          SecPerCluster   db 1
-          ReservedSectors dw 1
-          NumFATs         db 2
-          RootDirEntries  dw 224
-          TotalSectors    dw 2880         ; 1.44 MB
-          MediaType       db 0xF0         ; 3.5" 1.44M
-          SectorsPerFAT   dw 9
-          SectorsPerTrack dw 18
-          NumHeads        dw 2
-          HiddenSectors   dd 0
-          LargeSectors    dd 0
-          DriveNumber     db 0
-          Reserved        db 0
-          ExtBootSign     db 0x29
-          SerialNumber    dd 0xDEADBEEF
-          VolumeLabel     db "XROGER DOS "  ; 11 bytes
-          FileSystem      db "FAT12   "    ; 8 bytes
+              jmp short boot_start
+              nop
           
-          start:
-              ; セットアップ
+          ; BPB (BIOS Parameter Block)
+          bpb_data:
+              db "XROGERDOS"    ; OEM ID (8 bytes)
+              dw 512            ; Bytes per sector
+              db 1              ; Sectors per cluster
+              dw 1              ; Reserved sectors
+              db 2              ; Number of FATs
+              dw 224           ; Root directory entries
+              dw 2880          ; Total sectors (1.44MB)
+              db 0xF0          ; Media descriptor
+              dw 9             ; Sectors per FAT
+              dw 18            ; Sectors per track
+              dw 2             ; Number of heads
+              dd 0             ; Hidden sectors
+              dd 0             ; Total sectors (large)
+              db 0             ; Drive number
+              db 0             ; Reserved
+              db 0x29          ; Extended boot signature
+              dd 0xDEADBEEF    ; Volume serial number
+              db "XROGER-DOS " ; Volume label (11 bytes)
+              db "FAT12   "    ; File system type (8 bytes)
+          
+          boot_start:
+              ; スタックの設定
               cli
-              mov ax, 0x07C0
+              mov ax, 0x7C00
+              mov ss, ax
+              mov sp, 0x7C00
+              sti
+          
+              ; セグメントレジスタの設定
+              mov ax, 0x0000
               mov ds, ax
               mov es, ax
-              mov ax, 0x8000
-              mov ss, ax
-              mov sp, 0xFFFE
-              sti
-              
+          
+              ; 画面モードの設定（PC-98用テキストモード）
+              mov ah, 0x00
+              mov al, 0x00    ; テキストモード
+              int 0x18        ; PC-98 BIOS call
+          
               ; 画面クリア
               mov ax, 0x0600
               mov bh, 0x07
               mov cx, 0x0000
               mov dx, 0x184F
               int 0x10
-              
+          
+              ; システムファイルのロード
+              call load_system
+          
               ; メッセージ表示
               mov si, welcome_msg
               call print_string
-              
+          
+              ; 無限ループ
               jmp $
           
+          load_system:
+              ; ここでシステムファイルをロード
+              push ax
+              push bx
+              push cx
+              
+              ; システム領域の読み込み (セクタ 2-10)
+              mov ax, 0x0200      ; 機能: ディスク読み込み
+              mov cx, 9           ; 読み込むセクタ数
+              mov bx, 0x8000      ; ロード先アドレス
+              int 0x13
+              
+              pop cx
+              pop bx
+              pop ax
+              ret
+          
           print_string:
-              lodsb
-              or al, al
+              lodsb               ; DSI から 1バイト読み込み
+              or al, al          ; 終端(0)チェック
               jz .done
-              mov ah, 0x0E
+              mov ah, 0x0E       ; TTY出力
               int 0x10
               jmp print_string
           .done:
               ret
           
           welcome_msg:
-              db 'Welcome to Xroger DOS v1.0', 13, 10
-              db 'A custom DOS for PC-98', 13, 10
-              db 'Created: 2025-07-18', 13, 10, 0
+              db 'welcom!!! This is xroger.hdi create by project_evanerd!!', 13, 10, 0
+          
+          ; システム情報
+          system_info:
+              db 'XROGER-DOS System Disk v1.0', 0
           
           times 510-($-$$) db 0
-          dw 0xAA55
+          dw 0xAA55             ; ブートシグネチャ
+          
+          ; システム領域 (512バイト以降)
+          system_code:
+              ; 基本的なシステムコード
+              db 0xEB, 0xFE     ; 無限ループ
+              times 512 db 0     ; パディング
           EOF
           
-          nasm -f bin boot.asm -o boot.bin
-
-      - name: Create HDI image
-        run: |
-          # Create initial disk image (1.44MB)
-          dd if=/dev/zero of=disk.img bs=512 count=2880
+          # アセンブル
+          nasm -f bin ipl.asm -o ipl.bin
           
-          # Write bootloader
-          dd if=boot.bin of=disk.img conv=notrunc
+          # ディスクイメージの作成
+          dd if=/dev/zero of=xroger.hdi bs=512 count=2880
           
-          # Create system files
-          echo -e "XRoger System File" > system.dat
-          echo -e "@ECHO OFF\nECHO Welcome to XRoger DOS" > autoexec.dat
-          echo -e "DEVICE=XROGER.SYS" > config.dat
+          # IPLの書き込み
+          dd if=ipl.bin of=xroger.hdi conv=notrunc
           
-          # Calculate positions and write system files
-          # First data sector starts after boot sector, FATs, and root directory
-          # Root directory starts at sector 19 (1 boot + 18 FAT)
-          dd if=system.dat of=disk.img bs=512 seek=33 conv=notrunc
-          dd if=autoexec.dat of=disk.img bs=512 seek=34 conv=notrunc
-          dd if=config.dat of=disk.img bs=512 seek=35 conv=notrunc
+          # システム領域の作成
+          echo -e "XROGER-DOS SYSTEM AREA" > system.bin
+          dd if=system.bin of=xroger.hdi bs=512 seek=1 conv=notrunc
           
-          # Create HDI file
-          mv disk.img xroger.hdi
+          # FAT領域の初期化
+          dd if=/dev/zero of=fat.bin bs=512 count=9
+          dd if=fat.bin of=xroger.hdi bs=512 seek=1 conv=notrunc
+          dd if=fat.bin of=xroger.hdi bs=512 seek=10 conv=notrunc
+          
+          # ルートディレクトリ領域の初期化
+          dd if=/dev/zero of=root.bin bs=512 count=14
+          dd if=root.bin of=xroger.hdi bs=512 seek=19 conv=notrunc
 
       - name: Upload HDI file
         uses: actions/upload-artifact@v4
