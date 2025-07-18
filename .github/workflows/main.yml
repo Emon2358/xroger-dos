@@ -15,22 +15,26 @@ jobs:
       - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm dosfstools mtools genisoimage wget unzip
+          sudo apt-get install -y nasm dosfstools mtools genisoimage wget unzip p7zip-full
 
       - name: Download and Extract FreeDOS files
         run: |
           wget https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/FD14-LiveCD.zip
-          unzip FD14-LiveCD.zip
           mkdir dos_files
-          # FreeDOS 1.4のISOから必要なファイルを抽出
-          7z x FD14-LiveCD.iso
-          cp FREEDOS/KERNEL.SYS dos_files/
-          cp FREEDOS/COMMAND.COM dos_files/
-          cp FREEDOS/FDCONFIG.SYS dos_files/
-          cp FREEDOS/AUTOEXEC.BAT dos_files/
-          # 不要なファイルを削除
-          rm -rf FREEDOS
-          rm FD14-LiveCD.iso
+          # ZIPファイルから直接必要なファイルを抽出
+          7z x FD14-LiveCD.zip -o./temp_freedos
+          cd temp_freedos
+          # LiveCDのISOファイルを見つけて展開
+          ISO_FILE=$(find . -name "*.iso" -type f)
+          7z x "$ISO_FILE" -o./iso_contents
+          # 必要なファイルをコピー
+          find ./iso_contents -iname "KERNEL.SYS" -exec cp {} ../dos_files/ \;
+          find ./iso_contents -iname "COMMAND.COM" -exec cp {} ../dos_files/ \;
+          find ./iso_contents -iname "HIMEM.SYS" -exec cp {} ../dos_files/ \;
+          find ./iso_contents -iname "EMM386.EXE" -exec cp {} ../dos_files/ \;
+          cd ..
+          # 一時ファイルを削除
+          rm -rf temp_freedos
           rm FD14-LiveCD.zip
 
       - name: Create PC-98 IPL and system
@@ -38,7 +42,7 @@ jobs:
           # Create README
           cat > README.txt << 'EOF'
           XROGER DOS HDDイメージ
-          作成日時: 2025-07-18 15:48:44 (UTC)
+          作成日時: 2025-07-18 15:52:41 (UTC)
           作成者: Emon2358
 
           【注意事項】
@@ -75,7 +79,7 @@ jobs:
           NumberOfHeads:      dw 2
           HiddenSectors:      dd 0
           TotalSectorsBig:    dd 0
-          DriveNumber:        db 0
+          DriveNumber:        db 0x80        ; ハードディスクとして認識
           Reserved:           db 0
           ExtBootSignature:   db 0x29
           VolumeID:          dd 0x12345678
@@ -102,66 +106,21 @@ jobs:
               mov dl, 0x80          ; HDDを指定
               int 0x13
 
-              ; ルートディレクトリの読み込み
-              mov ax, 19            ; ルートディレクトリの開始セクタ
-              mov bx, 0x8000        ; バッファアドレス
-              call read_sectors
-
-              ; KERNEL.SYSの検索
-              mov cx, 224           ; ルートディレクトリエントリ数
-              mov di, 0x8000        ; 検索開始アドレス
-          find_kernel:
-              push cx
-              mov cx, 11            ; ファイル名の長さ
-              mov si, kernel_name
-              push di
-              repe cmpsb
-              pop di
-              je kernel_found
-              pop cx
-              add di, 32            ; 次のディレクトリエントリ
-              loop find_kernel
-              jmp boot_error
-
-          kernel_found:
-              ; KERNEL.SYSの読み込みと実行
-              mov ax, [di + 26]     ; 最初のクラスタ番号
-              mov bx, 0x1000        ; 読み込み先アドレス
-              call load_kernel
-              
-              ; KERNEL.SYSに制御を移す
-              jmp 0x0000:0x1000
-
-          read_sectors:
-              push ax
-              push cx
-              push dx
-              
-              mov cx, 1             ; 1セクタ読み込み
-              xor dx, dx            ; ヘッド0, ドライブ0
+              ; KERNEL.SYSをロード
+              mov ax, 0x1000
+              mov es, ax            ; ES:BX = 0x1000:0x0000
+              xor bx, bx
+              mov ax, 0x0201        ; AH=02 (read), AL=01 (1 sector)
+              mov cx, 0x0002        ; CH=0 (cylinder), CL=2 (sector)
+              xor dh, dh           ; DH=0 (head)
+              mov dl, 0x80          ; DL=0x80 (first hard disk)
               int 0x13
-              
-              pop dx
-              pop cx
-              pop ax
-              ret
+              jc error
 
-          load_kernel:
-              ; カーネル読み込み処理
-              push ax
-              push bx
-              push cx
-              
-              mov cx, 32            ; 読み込むセクタ数（仮の値）
-              int 0x13
-              
-              pop cx
-              pop bx
-              pop ax
-              ret
+              ; KERNELにジャンプ
+              jmp 0x1000:0x0000
 
-          boot_error:
-              ; エラーメッセージ表示
+          error:
               mov si, error_msg
               call print_string
               jmp $
@@ -176,8 +135,7 @@ jobs:
           .done:
               ret
 
-          kernel_name:    db "KERNEL  SYS"
-          error_msg:      db "Error: KERNEL.SYS not found", 13, 10, 0
+          error_msg:      db "Error: Failed to load KERNEL.SYS", 13, 10, 0
 
           times 510-($-$$) db 0
           dw 0xAA55
@@ -206,21 +164,24 @@ jobs:
           # Copy system files
           sudo cp dos_files/KERNEL.SYS tmp_mount/
           sudo cp dos_files/COMMAND.COM tmp_mount/
-          sudo cp dos_files/FDCONFIG.SYS tmp_mount/CONFIG.SYS
+          sudo cp dos_files/HIMEM.SYS tmp_mount/
+          sudo cp dos_files/EMM386.EXE tmp_mount/
           sudo cp README.txt tmp_mount/
           
-          # Create/modify configuration files
-          echo "LASTDRIVE=Z" | sudo tee -a tmp_mount/CONFIG.SYS
+          # Create configuration files
+          echo "LASTDRIVE=Z" | sudo tee tmp_mount/CONFIG.SYS
           echo "FILES=40" | sudo tee -a tmp_mount/CONFIG.SYS
           echo "BUFFERS=40" | sudo tee -a tmp_mount/CONFIG.SYS
           echo "DOS=HIGH,UMB" | sudo tee -a tmp_mount/CONFIG.SYS
           echo "DEVICE=HIMEM.SYS" | sudo tee -a tmp_mount/CONFIG.SYS
           echo "DEVICEHIGH=EMM386.EXE NOEMS" | sudo tee -a tmp_mount/CONFIG.SYS
+          echo "SHELL=C:\COMMAND.COM /P /E:512" | sudo tee -a tmp_mount/CONFIG.SYS
           
           echo "@ECHO OFF" | sudo tee tmp_mount/AUTOEXEC.BAT
+          echo "PROMPT $P$G" | sudo tee -a tmp_mount/AUTOEXEC.BAT
           echo "PATH C:\;C:\DOS" | sudo tee -a tmp_mount/AUTOEXEC.BAT
           echo "SET TEMP=C:\TEMP" | sudo tee -a tmp_mount/AUTOEXEC.BAT
-          echo "PROMPT $P$G" | sudo tee -a tmp_mount/AUTOEXEC.BAT
+          echo "MKDIR C:\TEMP" | sudo tee -a tmp_mount/AUTOEXEC.BAT
           echo "CLS" | sudo tee -a tmp_mount/AUTOEXEC.BAT
           echo "ECHO Welcome to XROGER-DOS!" | sudo tee -a tmp_mount/AUTOEXEC.BAT
           
@@ -247,7 +208,7 @@ jobs:
           name: Xroger DOS Release
           body: |
             XROGER DOS HDDイメージ
-            作成日時: 2025-07-18 15:48:44 (UTC)
+            作成日時: 2025-07-18 15:52:41 (UTC)
             作成者: Emon2358
 
             【注意事項】
