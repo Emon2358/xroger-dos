@@ -25,166 +25,207 @@ jobs:
           # Extract ISO
           unzip FD14-LiveCD.zip
           
-          # Debug: List contents
-          echo "Listing contents of current directory:"
-          ls -la
+          # Create a blank 1.44MB image
+          dd if=/dev/zero of=xroger.hdi bs=1024 count=1440
           
-          # Mount ISO and show contents
-          mkdir -p iso_mount
-          sudo mount -o loop FD14LIVE.iso iso_mount
-          
-          echo "Listing contents of ISO mount:"
-          ls -laR iso_mount/
-          
-          # Create HDI
-          qemu-img create -f raw xroger.hdi 1474560
-          
-          # Format HDI
-          mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
-          
-          # Mount HDI
-          mkdir -p hdi_mount
-          sudo mount -o loop xroger.hdi hdi_mount
-          
-          # Create DOS directory structure
-          sudo mkdir -p hdi_mount/DOS
-          
-          # Copy FreeDOS system files (adjust paths based on ISO structure)
-          echo "Copying system files..."
-          sudo find iso_mount -iname "kernel.sys" -exec cp {} hdi_mount/ \;
-          sudo find iso_mount -iname "command.com" -exec cp {} hdi_mount/ \;
-          sudo find iso_mount -iname "himem.sys" -exec cp {} hdi_mount/DOS/ \;
-          sudo find iso_mount -iname "emm386.exe" -exec cp {} hdi_mount/DOS/ \;
-          
-          # List copied files
-          echo "Contents of HDI mount:"
-          ls -laR hdi_mount/
-          
-          # Create README
-          cat > README.txt << EOF
-          XROGER DOS HDDイメージ
-          作成日時: 2025-07-18 16:26:15 (UTC)
-          作成者: Emon2358
-
-          【注意事項】
-          ・このHDDイメージはFreeDOS(98)が起動する状態に設定されています。
-          ・作成の段階でHDDのフォーマットのみMS-DOSを使用していますが、
-            イメージにはMS-DOSのデータが含まれないため配布に問題ないものとしています。
-
-          【免責事項】
-          ・このHDDイメージを利用し発生したいかなる事象も関知いたしません。
-          ・すべて自身の責任においてご利用ください。
-          ・問い合わせも不可とさせていただきます。
-          EOF
-          
-          sudo cp README.txt hdi_mount/
-          
-          # Create configuration files
-          echo "Creating CONFIG.SYS..."
-          cat > config.sys << EOF
-          LASTDRIVE=Z
-          FILES=40
-          BUFFERS=40
-          DOS=HIGH,UMB
-          DEVICE=DOS\HIMEM.SYS
-          DEVICEHIGH=DOS\EMM386.EXE NOEMS
-          SHELL=COMMAND.COM /P /E:512
-          EOF
-          sudo cp config.sys hdi_mount/CONFIG.SYS
-          
-          echo "Creating AUTOEXEC.BAT..."
-          cat > autoexec.bat << EOF
-          @ECHO OFF
-          PROMPT \$P\$G
-          PATH C:\;C:\DOS
-          SET TEMP=C:\TEMP
-          MKDIR C:\TEMP
-          CLS
-          ECHO Welcome to XROGER-DOS!
-          EOF
-          sudo cp autoexec.bat hdi_mount/AUTOEXEC.BAT
-          
-          # Create IPL
+          # Create PC-98 IPL
           cat > ipl.asm << 'EOF'
           [BITS 16]
           [ORG 0x0]
           
-          ; BPB (BIOS Parameter Block)
+          ; PC-98 Boot Sector
           jmp short boot_start
           nop
           
-          OEMLabel:           db "XROGDOS "  ; 8 bytes
-          BytesPerSector:     dw 512
-          SectorsPerCluster:  db 1
-          ReservedSectors:    dw 1
-          NumberOfFATs:       db 2
-          RootDirEntries:     dw 224
-          TotalSectors:       dw 2880        ; 1.44MB
-          MediaDescriptor:    db 0xF0        ; 3.5" 1.44MB floppy
-          SectorsPerFAT:      dw 9
-          SectorsPerTrack:    dw 18
-          NumberOfHeads:      dw 2
-          HiddenSectors:      dd 0
-          TotalSectorsBig:    dd 0
-          DriveNumber:        db 0x80        ; ハードディスクとして認識
-          Reserved:           db 0
-          ExtBootSignature:   db 0x29
-          VolumeID:          dd 0x12345678
-          VolumeLabel:        db "XROGER-DOS "  ; 11 bytes
-          FileSysType:        db "FAT12   "    ; 8 bytes
-
+          bpb:
+              db "XROGDOS "      ; OEM ID
+              dw 512            ; Bytes per sector
+              db 1              ; Sectors per cluster
+              dw 1              ; Reserved sectors
+              db 2              ; Number of FATs
+              dw 224           ; Root directory entries
+              dw 2880          ; Total sectors
+              db 0xF0          ; Media descriptor
+              dw 9             ; Sectors per FAT
+              dw 18            ; Sectors per track
+              dw 2             ; Number of heads
+              dd 0             ; Hidden sectors
+              dd 0             ; Total sectors (large)
+              db 0x80          ; Drive number
+              db 0             ; Reserved
+              db 0x29          ; Extended boot signature
+              dd 0x12345678    ; Volume serial number
+              db "XROGER-DOS "  ; Volume label
+              db "FAT12   "     ; File system type
+          
           boot_start:
-              ; PC-98向けの初期化
+              ; Set up segments
               cli
-              xor ax, ax
+              mov ax, 0x0000
               mov ss, ax
               mov sp, 0x7C00
               mov ds, ax
               mov es, ax
               sti
-
-              ; PC-98 BIOS用の画面初期化
-              mov ah, 0x00           ; テキストモード設定
+          
+              ; PC-98 BIOS initialization
+              mov ah, 0x00    ; Initialize text mode
               mov al, 0x00
               int 0x18
-
+          
+              ; Display boot message
+              mov si, msg_boot
+              call print_string
+          
               ; Reset disk system
               xor ax, ax
+              mov dl, 0x80    ; First hard disk
               int 0x13
               jc error
-
-              ; Load KERNEL.SYS
-              mov ax, 0x1000        ; Load address
-              mov es, ax
-              xor bx, bx
-              
-              mov ax, 0x0201        ; Read one sector
-              mov cx, 0x0002        ; Track 0, Sector 2
-              xor dh, dh           ; Head 0
-              mov dl, 0x80          ; Drive 0x80 (HDD)
-              int 0x13
-              jc error
-
+          
+              ; Load the root directory
+              mov ax, 19      ; First root directory sector
+              mov bx, 0x8000  ; Load address
+              mov cx, 14      ; Number of sectors (224 * 32 / 512)
+              call read_sectors
+          
+              ; Find KERNEL.SYS
+              mov cx, 224     ; Number of root directory entries
+              mov di, 0x8000  ; Directory buffer
+          find_kernel:
+              push cx
+              mov cx, 11
+              mov si, filename_kernel
+              push di
+              repe cmpsb
+              pop di
+              je found_kernel
+              pop cx
+              add di, 32
+              loop find_kernel
+              jmp error
+          
+          found_kernel:
+              mov ax, word [di + 26]    ; First cluster
+              mov bx, 0x1000            ; Load address
+              call load_file
+          
               ; Jump to kernel
-              jmp 0x1000:0x0000
-
+              mov dl, 0x80              ; Drive number
+              jmp 0x0000:0x1000
+          
           error:
-              mov si, error_msg
+              mov si, msg_error
               call print_string
               jmp $
-
+          
+          ; Read sectors (AX=start sector, BX=buffer, CX=count)
+          read_sectors:
+              push ax
+              push bx
+              push cx
+          .loop:
+              push ax
+              push cx
+              
+              ; Convert LBA to CHS
+              xor dx, dx
+              div word [sectors_per_track]
+              inc dl          ; Sector numbers start at 1
+              mov cl, dl      ; Sector number
+              
+              xor dx, dx
+              div word [heads]
+              mov dh, dl      ; Head number
+              mov ch, al      ; Track number
+              
+              mov al, 0x01    ; Sectors to read
+              mov ah, 0x02    ; Read sectors
+              mov dl, 0x80    ; Drive number
+              
+              push cx
+              int 0x13
+              pop cx
+              jc error
+              
+              pop cx
+              pop ax
+              
+              add bx, 512     ; Next buffer
+              inc ax          ; Next sector
+              loop .loop
+              
+              pop cx
+              pop bx
+              pop ax
+              ret
+          
+          ; Load FAT12 file (AX=first cluster, BX=buffer)
+          load_file:
+              push ax
+              push bx
+          .load_cluster:
+              push ax
+              
+              ; Convert cluster to sector
+              sub ax, 2
+              xor dx, dx
+              mov cx, word [sectors_per_cluster]
+              mul cx
+              add ax, word [data_start]
+              
+              ; Read cluster
+              mov cx, word [sectors_per_cluster]
+              call read_sectors
+              
+              ; Get next cluster
+              pop ax
+              push bx
+              mov bx, 0x7E00
+              push ax
+              shr ax, 1
+              add bx, ax
+              mov ax, [bx]
+              pop bx
+              test bx, 1
+              jz .even_cluster
+          .odd_cluster:
+              shr ax, 4
+              jmp .check_end
+          .even_cluster:
+              and ax, 0x0FFF
+          .check_end:
+              pop bx
+              cmp ax, 0x0FF8
+              jae .done
+              
+              add bx, 512
+              jmp .load_cluster
+          .done:
+              pop bx
+              pop ax
+              ret
+          
           print_string:
               lodsb
               or al, al
               jz .done
-              mov ah, 0x0A          ; PC-98 BIOS文字出力
+              mov ah, 0x0A
               int 0x18
               jmp print_string
           .done:
               ret
-
-          error_msg:      db "Boot Error: System halted", 13, 10, 0
-
+          
+          ; Data
+          sectors_per_track  dw 18
+          heads             dw 2
+          sectors_per_cluster db 1
+          data_start       dw 33
+          
+          filename_kernel   db "KERNEL  SYS"
+          msg_boot         db "Loading XROGER-DOS...", 13, 10, 0
+          msg_error        db "Boot error!", 13, 10, 0
+          
           times 510-($-$$) db 0
           dw 0xAA55
           EOF
@@ -192,21 +233,86 @@ jobs:
           # Compile IPL
           nasm -f bin -o ipl.bin ipl.asm
           
-          # Write IPL to HDI
+          # Write IPL to disk image
           dd if=ipl.bin of=xroger.hdi conv=notrunc bs=512 count=1
           
-          # Unmount everything
-          sudo umount iso_mount || true
-          sudo umount hdi_mount || true
+          # Format the rest of the disk
+          mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
+          
+          # Mount the disk image
+          mkdir -p hdi_mount
+          sudo mount -o loop xroger.hdi hdi_mount
+          
+          # Mount ISO
+          mkdir -p iso_mount
+          sudo mount -o loop FD14LIVE.iso iso_mount
+          
+          # Create directory structure
+          sudo mkdir -p hdi_mount/DOS
+          
+          # Find and copy necessary files
+          echo "Copying system files..."
+          for file in KERNEL.SYS COMMAND.COM FDCONFIG.SYS IO.SYS MSDOS.SYS; do
+            sudo find iso_mount -iname "$file" -exec cp {} hdi_mount/ \; || true
+          done
+          
+          # Copy DOS directory files
+          for file in HIMEM.SYS EMM386.EXE FDOS.SYS; do
+            sudo find iso_mount -iname "$file" -exec cp {} hdi_mount/DOS/ \; || true
+          done
+          
+          # Create minimal CONFIG.SYS
+          cat > config.sys << EOF
+          DEVICE=DOS\HIMEM.SYS
+          DOS=HIGH
+          FILES=40
+          BUFFERS=40
+          SHELL=COMMAND.COM /P /E:512
+          EOF
+          sudo cp config.sys hdi_mount/CONFIG.SYS
+          
+          # Create minimal AUTOEXEC.BAT
+          cat > autoexec.bat << EOF
+          @ECHO OFF
+          SET PATH=C:\;C:\DOS
+          PROMPT $P$G
+          EOF
+          sudo cp autoexec.bat hdi_mount/AUTOEXEC.BAT
+          
+          # Create README
+          cat > README.txt << EOF
+          XROGER DOS HDDイメージ
+          作成日時: 2025-07-18 16:31:17 (UTC)
+          作成者: Emon2358
+          
+          【注意事項】
+          ・このHDDイメージはFreeDOS(98)が起動する状態に設定されています。
+          ・作成の段階でHDDのフォーマットのみMS-DOSを使用していますが、
+            イメージにはMS-DOSのデータが含まれないため配布に問題ないものとしています。
+          
+          【免責事項】
+          ・このHDDイメージを利用し発生したいかなる事象も関知いたしません。
+          ・すべて自身の責任においてご利用ください。
+          ・問い合わせも不可とさせていただきます。
+          EOF
+          sudo cp README.txt hdi_mount/
+          
+          # List files for debugging
+          echo "Contents of HDI:"
+          ls -la hdi_mount/
+          echo "Contents of DOS directory:"
+          ls -la hdi_mount/DOS/
+          
+          # Unmount
+          sudo umount iso_mount
+          sudo umount hdi_mount
           
           # Cleanup
           rm -rf iso_mount hdi_mount
-          rm -f FD14LIVE.iso FD14BOOT.img
-          rm -f ipl.bin config.sys autoexec.bat
+          rm -f FD14LIVE.iso FD14BOOT.img ipl.bin config.sys autoexec.bat
           
-          # Debug info
-          echo "Final contents:"
-          ls -la
+          # Show final file
+          ls -l xroger.hdi
           file xroger.hdi
 
       - name: Upload HDI file
@@ -216,7 +322,7 @@ jobs:
           path: |
             xroger.hdi
             README.txt
-          
+
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v1
@@ -226,20 +332,7 @@ jobs:
             xroger.hdi
             README.txt
           name: Xroger DOS Release
-          body: |
-            XROGER DOS HDDイメージ
-            作成日時: 2025-07-18 16:26:15 (UTC)
-            作成者: Emon2358
-
-            【注意事項】
-            ・このHDDイメージはFreeDOS(98)が起動する状態に設定されています。
-            ・作成の段階でHDDのフォーマットのみMS-DOSを使用していますが、
-              イメージにはMS-DOSのデータが含まれないため配布に問題ないものとしています。
-
-            【免責事項】
-            ・このHDDイメージを利用し発生したいかなる事象も関知いたしません。
-            ・すべて自身の責任においてご利用ください。
-            ・問い合わせも不可とさせていただきます。
+          body_path: README.txt
           tag_name: v1.0.${{ github.run_number }}
           draft: false
           prerelease: false
