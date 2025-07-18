@@ -15,20 +15,47 @@ jobs:
       - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm mtools dosfstools
+          sudo apt-get install -y nasm dosfstools
 
-      - name: Create boot sector
+      - name: Create PC-98 bootloader
         run: |
           cat > boot.asm << 'EOF'
           [BITS 16]
-          [ORG 0x7C00]
+          [ORG 0x0100]
+          
+              jmp short start
+            nop
+            
+          ; BPB (BIOS Parameter Block)
+          OEMLabel        db "XROGERDOS"  ; 8 bytes
+          BytesPerSector  dw 512
+          SecPerCluster   db 1
+          ReservedSectors dw 1
+          NumFATs         db 2
+          RootDirEntries  dw 224
+          TotalSectors    dw 2880         ; 1.44 MB
+          MediaType       db 0xF0         ; 3.5" 1.44M
+          SectorsPerFAT   dw 9
+          SectorsPerTrack dw 18
+          NumHeads        dw 2
+          HiddenSectors   dd 0
+          LargeSectors    dd 0
+          DriveNumber     db 0
+          Reserved        db 0
+          ExtBootSign     db 0x29
+          SerialNumber    dd 0xDEADBEEF
+          VolumeLabel     db "XROGER DOS "  ; 11 bytes
+          FileSystem      db "FAT12   "    ; 8 bytes
           
           start:
               ; セットアップ
               cli
-              mov ax, 0x0000
+              mov ax, 0x07C0
+              mov ds, ax
+              mov es, ax
+              mov ax, 0x8000
               mov ss, ax
-              mov sp, 0x7C00
+              mov sp, 0xFFFE
               sti
               
               ; 画面クリア
@@ -39,7 +66,7 @@ jobs:
               int 0x10
               
               ; メッセージ表示
-              mov si, msg
+              mov si, welcome_msg
               call print_string
               
               jmp $
@@ -54,9 +81,10 @@ jobs:
           .done:
               ret
           
-          msg db 'Xroger DOS v1.0', 13, 10
-              db 'Created by GitHub Actions', 13, 10
-              db 'Copyright (c) 2025', 13, 10, 0
+          welcome_msg:
+              db 'Welcome to Xroger DOS v1.0', 13, 10
+              db 'A custom DOS for PC-98', 13, 10
+              db 'Created: 2025-07-18', 13, 10, 0
           
           times 510-($-$$) db 0
           dw 0xAA55
@@ -66,36 +94,26 @@ jobs:
 
       - name: Create HDI image
         run: |
-          # Create a 1.44MB HDI file
-          dd if=/dev/zero of=xroger.hdi bs=1k count=1440
+          # Create initial disk image (1.44MB)
+          dd if=/dev/zero of=disk.img bs=512 count=2880
           
-          # Format the image with FAT12
-          mkfs.fat -F 12 xroger.hdi
+          # Write bootloader
+          dd if=boot.bin of=disk.img conv=notrunc
           
-          # Write boot sector
-          dd if=boot.bin of=xroger.hdi conv=notrunc
-
-      - name: Create system files
-        run: |
-          # MCOPYを使用してファイルを直接HDIイメージに書き込む
-          # MTOOLS_LOWER_CASE=1を設定して小文字のファイル名を許可
-          export MTOOLS_LOWER_CASE=1
+          # Create system files
+          echo -e "XRoger System File" > system.dat
+          echo -e "@ECHO OFF\nECHO Welcome to XRoger DOS" > autoexec.dat
+          echo -e "DEVICE=XROGER.SYS" > config.dat
           
-          # mtoolsの設定ファイルを作成
-          echo "drive c: file=\"$PWD/xroger.hdi\"" > ~/.mtoolsrc
+          # Calculate positions and write system files
+          # First data sector starts after boot sector, FATs, and root directory
+          # Root directory starts at sector 19 (1 boot + 18 FAT)
+          dd if=system.dat of=disk.img bs=512 seek=33 conv=notrunc
+          dd if=autoexec.dat of=disk.img bs=512 seek=34 conv=notrunc
+          dd if=config.dat of=disk.img bs=512 seek=35 conv=notrunc
           
-          # システムファイルを一時的に作成
-          echo "This is XROGER.SYS" > xroger.sys
-          echo "CONFIG.SYS for Xroger DOS" > config.sys
-          echo "AUTOEXEC.BAT for Xroger DOS" > autoexec.bat
-          
-          # ファイルをイメージにコピー
-          mcopy xroger.sys c:XROGER.SYS
-          mcopy config.sys c:CONFIG.SYS
-          mcopy autoexec.bat c:AUTOEXEC.BAT
-          
-          # 一時ファイルを削除
-          rm xroger.sys config.sys autoexec.bat
+          # Create HDI file
+          mv disk.img xroger.hdi
 
       - name: Upload HDI file
         uses: actions/upload-artifact@v4
