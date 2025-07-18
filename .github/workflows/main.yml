@@ -77,18 +77,28 @@ jobs:
 
       - name: Create system files
         run: |
-          mkdir -p tmpdisk
-          sudo mount -o loop xroger.hdi tmpdisk
+          # MCOPYを使用してファイルを直接HDIイメージに書き込む
+          # MTOOLS_LOWER_CASE=1を設定して小文字のファイル名を許可
+          export MTOOLS_LOWER_CASE=1
           
-          # Create simple system files
-          echo "This is XROGER.SYS" > tmpdisk/XROGER.SYS
-          echo "CONFIG.SYS for Xroger DOS" > tmpdisk/CONFIG.SYS
-          echo "AUTOEXEC.BAT for Xroger DOS" > tmpdisk/AUTOEXEC.BAT
+          # mtoolsの設定ファイルを作成
+          echo "drive c: file=\"$PWD/xroger.hdi\"" > ~/.mtoolsrc
           
-          sudo umount tmpdisk
+          # システムファイルを一時的に作成
+          echo "This is XROGER.SYS" > xroger.sys
+          echo "CONFIG.SYS for Xroger DOS" > config.sys
+          echo "AUTOEXEC.BAT for Xroger DOS" > autoexec.bat
+          
+          # ファイルをイメージにコピー
+          mcopy xroger.sys c:XROGER.SYS
+          mcopy config.sys c:CONFIG.SYS
+          mcopy autoexec.bat c:AUTOEXEC.BAT
+          
+          # 一時ファイルを削除
+          rm xroger.sys config.sys autoexec.bat
 
       - name: Upload HDI file
-        uses: actions/upload-artifact@v4  # v3 から v4 に更新
+        uses: actions/upload-artifact@v4
         with:
           name: xroger-dos
           path: xroger.hdi
