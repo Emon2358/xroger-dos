@@ -15,98 +15,77 @@ jobs:
       - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm dosfstools
+          sudo apt-get install -y nasm dosfstools mtools genisoimage
 
-      - name: Create PC-98 system disk
+      - name: Create PC-98 IPL and system
         run: |
-          # IPLとシステムローダーの作成
+          # Create IPL (Initial Program Loader)
           cat > ipl.asm << 'EOF'
           [BITS 16]
-          [ORG 0x0100]
-          
-              jmp short boot_start
-              nop
+          [ORG 0x0]
           
           ; BPB (BIOS Parameter Block)
-          bpb_data:
-              db "XROGERDOS"    ; OEM ID (8 bytes)
-              dw 512            ; Bytes per sector
-              db 1              ; Sectors per cluster
-              dw 1              ; Reserved sectors
-              db 2              ; Number of FATs
-              dw 224           ; Root directory entries
-              dw 2880          ; Total sectors (1.44MB)
-              db 0xF0          ; Media descriptor
-              dw 9             ; Sectors per FAT
-              dw 18            ; Sectors per track
-              dw 2             ; Number of heads
-              dd 0             ; Hidden sectors
-              dd 0             ; Total sectors (large)
-              db 0             ; Drive number
-              db 0             ; Reserved
-              db 0x29          ; Extended boot signature
-              dd 0xDEADBEEF    ; Volume serial number
-              db "XROGER-DOS " ; Volume label (11 bytes)
-              db "FAT12   "    ; File system type (8 bytes)
+          jmp short entry
+          nop
           
-          boot_start:
-              ; スタックの設定
-              cli
-              mov ax, 0x7C00
+          db "XROGERDOS"    ; OEM ID (8 bytes)
+          dw 512            ; Bytes per sector
+          db 1              ; Sectors per cluster
+          dw 1              ; Reserved sectors
+          db 2              ; Number of FATs
+          dw 224           ; Root directory entries
+          dw 2880          ; Total sectors (1.44MB)
+          db 0xF0          ; Media descriptor
+          dw 9             ; Sectors per FAT
+          dw 18            ; Sectors per track
+          dw 2             ; Number of heads
+          dd 0             ; Hidden sectors
+          dd 0             ; Total sectors (large)
+          db 0             ; Drive number
+          db 0             ; Reserved
+          db 0x29          ; Extended boot signature
+          dd 0xDEADBEEF    ; Volume serial number
+          db "XROGER-DOS " ; Volume label (11 bytes)
+          db "FAT12   "    ; File system type (8 bytes)
+          
+          entry:
+              ; セットアップ
+              cli                     ; 割り込み禁止
+              xor ax, ax
               mov ss, ax
               mov sp, 0x7C00
-              sti
-          
-              ; セグメントレジスタの設定
-              mov ax, 0x0000
               mov ds, ax
               mov es, ax
+              sti                     ; 割り込み許可
           
-              ; 画面モードの設定（PC-98用テキストモード）
-              mov ah, 0x00
-              mov al, 0x00    ; テキストモード
-              int 0x18        ; PC-98 BIOS call
+              ; PC-98固有の初期化
+              mov ah, 0x00           ; テキストモード設定
+              mov al, 0x00
+              int 0x18               ; PC-98 BIOS call
           
               ; 画面クリア
-              mov ax, 0x0600
-              mov bh, 0x07
-              mov cx, 0x0000
-              mov dx, 0x184F
-              int 0x10
+              mov ah, 0x0C           ; 画面クリア
+              mov al, 0x00           ; 属性
+              int 0x18
           
-              ; システムファイルのロード
-              call load_system
+              ; カーソル位置設定
+              mov ah, 0x13
+              xor dx, dx            ; DH=row=0, DL=column=0
+              int 0x18
           
               ; メッセージ表示
               mov si, welcome_msg
               call print_string
           
-              ; 無限ループ
+              ; システム待機
               jmp $
           
-          load_system:
-              ; ここでシステムファイルをロード
-              push ax
-              push bx
-              push cx
-              
-              ; システム領域の読み込み (セクタ 2-10)
-              mov ax, 0x0200      ; 機能: ディスク読み込み
-              mov cx, 9           ; 読み込むセクタ数
-              mov bx, 0x8000      ; ロード先アドレス
-              int 0x13
-              
-              pop cx
-              pop bx
-              pop ax
-              ret
-          
           print_string:
-              lodsb               ; DSI から 1バイト読み込み
-              or al, al          ; 終端(0)チェック
+              lodsb                   ; DS:SIからALに1バイト読み込み
+              or al, al              ; 終端(0)チェック
               jz .done
-              mov ah, 0x0E       ; TTY出力
-              int 0x10
+              mov ah, 0x0A           ; 文字出力ファンクション
+              int 0x18               ; PC-98 BIOS call
               jmp print_string
           .done:
               ret
@@ -114,41 +93,49 @@ jobs:
           welcome_msg:
               db 'welcom!!! This is xroger.hdi create by project_evanerd!!', 13, 10, 0
           
-          ; システム情報
-          system_info:
-              db 'XROGER-DOS System Disk v1.0', 0
+          times 510-($-$$) db 0      ; ブートセクタを510バイトにパディング
+          dw 0xAA55                  ; ブートシグネチャ
           
-          times 510-($-$$) db 0
-          dw 0xAA55             ; ブートシグネチャ
-          
-          ; システム領域 (512バイト以降)
-          system_code:
-              ; 基本的なシステムコード
-              db 0xEB, 0xFE     ; 無限ループ
-              times 512 db 0     ; パディング
+          ; システム領域
+          system_area:
+              db 'XROGER-DOS System Area', 0
+              times 512 db 0         ; システム領域パディング
           EOF
           
-          # アセンブル
-          nasm -f bin ipl.asm -o ipl.bin
+          # Assemble IPL
+          nasm -f bin -o ipl.bin ipl.asm
           
-          # ディスクイメージの作成
-          dd if=/dev/zero of=xroger.hdi bs=512 count=2880
+          # Create system files
+          echo "XROGER.SYS - System File" > XROGER.SYS
+          echo "@ECHO OFF" > AUTOEXEC.BAT
+          echo "ECHO Starting XROGER-DOS..." >> AUTOEXEC.BAT
+          echo "DEVICE=XROGER.SYS" > CONFIG.SYS
+
+      - name: Create HDI image
+        run: |
+          # Create blank 1.44MB HDI
+          dd if=/dev/zero of=xroger.hdi bs=1024 count=1440
           
-          # IPLの書き込み
+          # Write IPL
           dd if=ipl.bin of=xroger.hdi conv=notrunc
           
-          # システム領域の作成
-          echo -e "XROGER-DOS SYSTEM AREA" > system.bin
-          dd if=system.bin of=xroger.hdi bs=512 seek=1 conv=notrunc
+          # Create temporary mount point
+          mkdir -p tmp_mount
           
-          # FAT領域の初期化
-          dd if=/dev/zero of=fat.bin bs=512 count=9
-          dd if=fat.bin of=xroger.hdi bs=512 seek=1 conv=notrunc
-          dd if=fat.bin of=xroger.hdi bs=512 seek=10 conv=notrunc
+          # Format as FAT12
+          mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
           
-          # ルートディレクトリ領域の初期化
-          dd if=/dev/zero of=root.bin bs=512 count=14
-          dd if=root.bin of=xroger.hdi bs=512 seek=19 conv=notrunc
+          # Mount the image (requires sudo)
+          sudo mount -o loop xroger.hdi tmp_mount
+          
+          # Copy system files
+          sudo cp XROGER.SYS tmp_mount/
+          sudo cp AUTOEXEC.BAT tmp_mount/
+          sudo cp CONFIG.SYS tmp_mount/
+          
+          # Unmount
+          sudo umount tmp_mount
+          rm -rf tmp_mount
 
       - name: Upload HDI file
         uses: actions/upload-artifact@v4
