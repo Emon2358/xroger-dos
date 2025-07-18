@@ -24,31 +24,46 @@ jobs:
           
           # Extract ISO
           unzip FD14-LiveCD.zip
-          ISO_FILE=$(find . -name "*.iso" -type f)
           
-          # Create a raw disk image
-          qemu-img create -f raw xroger.hdi 1474560
+          # Debug: List contents
+          echo "Listing contents of current directory:"
+          ls -la
           
-          # Create temporary mount points
+          # Mount ISO and show contents
           mkdir -p iso_mount
-          mkdir -p hdi_mount
+          sudo mount -o loop FD14LIVE.iso iso_mount
           
-          # Mount ISO
-          sudo mount -o loop "$ISO_FILE" iso_mount
+          echo "Listing contents of ISO mount:"
+          ls -laR iso_mount/
+          
+          # Create HDI
+          qemu-img create -f raw xroger.hdi 1474560
           
           # Format HDI
           mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
           
           # Mount HDI
+          mkdir -p hdi_mount
           sudo mount -o loop xroger.hdi hdi_mount
           
-          # Copy FreeDOS system files
-          sudo cp -r iso_mount/FREEDOS/* hdi_mount/
+          # Create DOS directory structure
+          sudo mkdir -p hdi_mount/DOS
+          
+          # Copy FreeDOS system files (adjust paths based on ISO structure)
+          echo "Copying system files..."
+          sudo find iso_mount -iname "kernel.sys" -exec cp {} hdi_mount/ \;
+          sudo find iso_mount -iname "command.com" -exec cp {} hdi_mount/ \;
+          sudo find iso_mount -iname "himem.sys" -exec cp {} hdi_mount/DOS/ \;
+          sudo find iso_mount -iname "emm386.exe" -exec cp {} hdi_mount/DOS/ \;
+          
+          # List copied files
+          echo "Contents of HDI mount:"
+          ls -laR hdi_mount/
           
           # Create README
           cat > README.txt << EOF
           XROGER DOS HDDイメージ
-          作成日時: 2025-07-18 16:20:42 (UTC)
+          作成日時: 2025-07-18 16:26:15 (UTC)
           作成者: Emon2358
 
           【注意事項】
@@ -64,19 +79,30 @@ jobs:
           
           sudo cp README.txt hdi_mount/
           
-          # Create/modify configuration files
-          echo "LASTDRIVE=Z" | sudo tee hdi_mount/CONFIG.SYS
-          echo "FILES=40" | sudo tee -a hdi_mount/CONFIG.SYS
-          echo "BUFFERS=40" | sudo tee -a hdi_mount/CONFIG.SYS
-          echo "SHELL=C:\COMMAND.COM /P /E:512" | sudo tee -a hdi_mount/CONFIG.SYS
+          # Create configuration files
+          echo "Creating CONFIG.SYS..."
+          cat > config.sys << EOF
+          LASTDRIVE=Z
+          FILES=40
+          BUFFERS=40
+          DOS=HIGH,UMB
+          DEVICE=DOS\HIMEM.SYS
+          DEVICEHIGH=DOS\EMM386.EXE NOEMS
+          SHELL=COMMAND.COM /P /E:512
+          EOF
+          sudo cp config.sys hdi_mount/CONFIG.SYS
           
-          echo "@ECHO OFF" | sudo tee hdi_mount/AUTOEXEC.BAT
-          echo "PROMPT $P$G" | sudo tee -a hdi_mount/AUTOEXEC.BAT
-          echo "PATH C:\;C:\DOS" | sudo tee -a hdi_mount/AUTOEXEC.BAT
-          echo "SET TEMP=C:\TEMP" | sudo tee -a hdi_mount/AUTOEXEC.BAT
-          echo "MKDIR C:\TEMP" | sudo tee -a hdi_mount/AUTOEXEC.BAT
-          echo "CLS" | sudo tee -a hdi_mount/AUTOEXEC.BAT
-          echo "ECHO Welcome to XROGER-DOS!" | sudo tee -a hdi_mount/AUTOEXEC.BAT
+          echo "Creating AUTOEXEC.BAT..."
+          cat > autoexec.bat << EOF
+          @ECHO OFF
+          PROMPT \$P\$G
+          PATH C:\;C:\DOS
+          SET TEMP=C:\TEMP
+          MKDIR C:\TEMP
+          CLS
+          ECHO Welcome to XROGER-DOS!
+          EOF
+          sudo cp autoexec.bat hdi_mount/AUTOEXEC.BAT
           
           # Create IPL
           cat > ipl.asm << 'EOF'
@@ -108,50 +134,56 @@ jobs:
           FileSysType:        db "FAT12   "    ; 8 bytes
 
           boot_start:
+              ; PC-98向けの初期化
               cli
-              mov ax, 0x07C0
+              xor ax, ax
+              mov ss, ax
+              mov sp, 0x7C00
               mov ds, ax
               mov es, ax
-              mov ax, 0x8000
-              mov ss, ax
-              mov sp, 0xFFFE
               sti
 
-              ; Initialize PC-98 screen
-              mov ah, 0x00
+              ; PC-98 BIOS用の画面初期化
+              mov ah, 0x00           ; テキストモード設定
               mov al, 0x00
               int 0x18
-              
+
               ; Reset disk system
               xor ax, ax
               int 0x13
-              
-              ; Load KERNEL.SYS
-              mov ax, 19          ; First data sector
-              mov bx, 0x8000      ; Buffer location
-              call read_sector
-              
-              ; Jump to kernel
-              jmp 0x0000:0x8000
+              jc error
 
-          read_sector:
-              push ax
-              push bx
-              push cx
-              push dx
+              ; Load KERNEL.SYS
+              mov ax, 0x1000        ; Load address
+              mov es, ax
+              xor bx, bx
               
-              mov cl, 1           ; Read one sector
-              xor ch, ch         ; Cylinder 0
-              xor dh, dh         ; Head 0
-              mov dl, 0x80        ; Drive number (HDD)
-              mov ah, 0x02        ; Read sectors
+              mov ax, 0x0201        ; Read one sector
+              mov cx, 0x0002        ; Track 0, Sector 2
+              xor dh, dh           ; Head 0
+              mov dl, 0x80          ; Drive 0x80 (HDD)
               int 0x13
-              
-              pop dx
-              pop cx
-              pop bx
-              pop ax
+              jc error
+
+              ; Jump to kernel
+              jmp 0x1000:0x0000
+
+          error:
+              mov si, error_msg
+              call print_string
+              jmp $
+
+          print_string:
+              lodsb
+              or al, al
+              jz .done
+              mov ah, 0x0A          ; PC-98 BIOS文字出力
+              int 0x18
+              jmp print_string
+          .done:
               ret
+
+          error_msg:      db "Boot Error: System halted", 13, 10, 0
 
           times 510-($-$$) db 0
           dw 0xAA55
@@ -164,16 +196,16 @@ jobs:
           dd if=ipl.bin of=xroger.hdi conv=notrunc bs=512 count=1
           
           # Unmount everything
-          sudo umount iso_mount
-          sudo umount hdi_mount
+          sudo umount iso_mount || true
+          sudo umount hdi_mount || true
           
           # Cleanup
           rm -rf iso_mount hdi_mount
-          rm -f "$ISO_FILE"
-          rm -f FD14-LiveCD.zip
-          rm -f ipl.bin
+          rm -f FD14LIVE.iso FD14BOOT.img
+          rm -f ipl.bin config.sys autoexec.bat
           
           # Debug info
+          echo "Final contents:"
           ls -la
           file xroger.hdi
 
@@ -196,7 +228,7 @@ jobs:
           name: Xroger DOS Release
           body: |
             XROGER DOS HDDイメージ
-            作成日時: 2025-07-18 16:20:42 (UTC)
+            作成日時: 2025-07-18 16:26:15 (UTC)
             作成者: Emon2358
 
             【注意事項】
