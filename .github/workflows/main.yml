@@ -222,21 +222,17 @@ jobs:
 
           nasm -f bin -o ipl.bin ipl.asm
 
-      - name: Create PC‑98 HDD image & format
+      - name: Create & format PC‑98 HDD image (fast)
         run: |
-          dosbox-x -c "createhd -hdimage xroger.hdi \
-                                  -size 1474560 \
-                                  -interface ide \
-                                  -geometry 80,2,18" \
-                    -c "quit"
-          echo "drive x: file=\"$(pwd)/xroger.hdi\" offset=0" > ~/.mtoolsrc
-          mformat -i xroger.hdi -f 1440 -T 18 -H 2 -S 512 -n XROGER-DOS ::
-          dd if=ipl.bin of=xroger.hdi conv=notrunc bs=512 seek=1 count=1
+          # 1) mkfs.fat -C で直接 2880セクタ (1.44MiB) の FAT12 イメージを生成
+          mkfs.fat -F12 -n XROGER-DOS -C xroger.hdi 2880
+          # 2) カスタム IPL を先頭セクタに上書き
+          dd if=ipl.bin of=xroger.hdi conv=notrunc bs=512 count=1
 
       - name: Mount, copy FreeDOS files, and finalize
         run: |
           mkdir -p hdi_mount iso_mount
-          sudo mount -o loop,offset=512 xroger.hdi hdi_mount
+          sudo mount -o loop xroger.hdi hdi_mount
           sudo mount -o loop FD14LIVE.iso iso_mount
 
           echo "Copying system files..."
@@ -283,7 +279,7 @@ jobs:
           sudo cp README.txt hdi_mount/
 
           sudo umount iso_mount hdi_mount
-          rm -rf iso_mount hdi_mount FD14LIVE.iso ipl.asm config.sys autoexec.bat
+          rm -rf iso_mount hdi_mount FD14LIVE.iso config.sys autoexec.bat
 
       - name: Upload HDI & README
         uses: actions/upload-artifact@v4
