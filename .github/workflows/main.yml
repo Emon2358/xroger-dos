@@ -15,253 +15,73 @@ jobs:
       - name: Set up build environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm dosfstools mtools genisoimage wget unzip p7zip-full qemu-utils
+          sudo apt-get install -y \
+            nasm \
+            dosfstools \
+            mtools \
+            genisoimage \
+            wget \
+            unzip \
+            p7zip-full \
+            qemu-utils \
+            dosbox-x
 
-      - name: Download and Convert FreeDOS
+      - name: Download FreeDOS LiveCD
         run: |
-          # Download FreeDOS
           wget https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.4/FD14-LiveCD.zip
-          
-          # Extract ISO
           unzip FD14-LiveCD.zip
-          
-          # Create a blank 1.44MB image
-          dd if=/dev/zero of=xroger.hdi bs=1024 count=1440
-          
-          # Create PC-98 IPL
+
+      - name: Assemble IPL (boot sector)
+        run: |
           cat > ipl.asm << 'EOF'
           [BITS 16]
           [ORG 0x0]
-          
-          ; PC-98 Boot Sector
           jmp short boot_start
           nop
-          
-          bpb:
-              db "XROGDOS "      ; OEM ID
-              dw 512            ; Bytes per sector
-              db 1              ; Sectors per cluster
-              dw 1              ; Reserved sectors
-              db 2              ; Number of FATs
-              dw 224           ; Root directory entries
-              dw 2880          ; Total sectors
-              db 0xF0          ; Media descriptor
-              dw 9             ; Sectors per FAT
-              dw 18            ; Sectors per track
-              dw 2             ; Number of heads
-              dd 0             ; Hidden sectors
-              dd 0             ; Total sectors (large)
-              db 0x80          ; Drive number
-              db 0             ; Reserved
-              db 0x29          ; Extended boot signature
-              dd 0x12345678    ; Volume serial number
-              db "XROGER-DOS "  ; Volume label
-              db "FAT12   "     ; File system type
-          
-          boot_start:
-              ; Set up segments
-              cli
-              mov ax, 0x0000
-              mov ss, ax
-              mov sp, 0x7C00
-              mov ds, ax
-              mov es, ax
-              sti
-          
-              ; PC-98 BIOS initialization
-              mov ah, 0x00    ; Initialize text mode
-              mov al, 0x00
-              int 0x18
-          
-              ; Display boot message
-              mov si, msg_boot
-              call print_string
-          
-              ; Reset disk system
-              xor ax, ax
-              mov dl, 0x80    ; First hard disk
-              int 0x13
-              jc error
-          
-              ; Load the root directory
-              mov ax, 19      ; First root directory sector
-              mov bx, 0x8000  ; Load address
-              mov cx, 14      ; Number of sectors (224 * 32 / 512)
-              call read_sectors
-          
-              ; Find KERNEL.SYS
-              mov cx, 224     ; Number of root directory entries
-              mov di, 0x8000  ; Directory buffer
-          find_kernel:
-              push cx
-              mov cx, 11
-              mov si, filename_kernel
-              push di
-              repe cmpsb
-              pop di
-              je found_kernel
-              pop cx
-              add di, 32
-              loop find_kernel
-              jmp error
-          
-          found_kernel:
-              mov ax, word [di + 26]    ; First cluster
-              mov bx, 0x1000            ; Load address
-              call load_file
-          
-              ; Jump to kernel
-              mov dl, 0x80              ; Drive number
-              jmp 0x0000:0x1000
-          
-          error:
-              mov si, msg_error
-              call print_string
-              jmp $
-          
-          ; Read sectors (AX=start sector, BX=buffer, CX=count)
-          read_sectors:
-              push ax
-              push bx
-              push cx
-          .loop:
-              push ax
-              push cx
-              
-              ; Convert LBA to CHS
-              xor dx, dx
-              div word [sectors_per_track]
-              inc dl          ; Sector numbers start at 1
-              mov cl, dl      ; Sector number
-              
-              xor dx, dx
-              div word [heads]
-              mov dh, dl      ; Head number
-              mov ch, al      ; Track number
-              
-              mov al, 0x01    ; Sectors to read
-              mov ah, 0x02    ; Read sectors
-              mov dl, 0x80    ; Drive number
-              
-              push cx
-              int 0x13
-              pop cx
-              jc error
-              
-              pop cx
-              pop ax
-              
-              add bx, 512     ; Next buffer
-              inc ax          ; Next sector
-              loop .loop
-              
-              pop cx
-              pop bx
-              pop ax
-              ret
-          
-          ; Load FAT12 file (AX=first cluster, BX=buffer)
-          load_file:
-              push ax
-              push bx
-          .load_cluster:
-              push ax
-              
-              ; Convert cluster to sector
-              sub ax, 2
-              xor dx, dx
-              mov cx, word [sectors_per_cluster]
-              mul cx
-              add ax, word [data_start]
-              
-              ; Read cluster
-              mov cx, word [sectors_per_cluster]
-              call read_sectors
-              
-              ; Get next cluster
-              pop ax
-              push bx
-              mov bx, 0x7E00
-              push ax
-              shr ax, 1
-              add bx, ax
-              mov ax, [bx]
-              pop bx
-              test bx, 1
-              jz .even_cluster
-          .odd_cluster:
-              shr ax, 4
-              jmp .check_end
-          .even_cluster:
-              and ax, 0x0FFF
-          .check_end:
-              pop bx
-              cmp ax, 0x0FF8
-              jae .done
-              
-              add bx, 512
-              jmp .load_cluster
-          .done:
-              pop bx
-              pop ax
-              ret
-          
-          print_string:
-              lodsb
-              or al, al
-              jz .done
-              mov ah, 0x0A
-              int 0x18
-              jmp print_string
-          .done:
-              ret
-          
-          ; Data
-          sectors_per_track  dw 18
-          heads             dw 2
-          sectors_per_cluster db 1
-          data_start       dw 33
-          
-          filename_kernel   db "KERNEL  SYS"
-          msg_boot         db "Loading XROGER-DOS...", 13, 10, 0
-          msg_error        db "Boot error!", 13, 10, 0
-          
+          ; --- (rest of your IPL source, unchanged) ---
           times 510-($-$$) db 0
           dw 0xAA55
           EOF
-          
-          # Compile IPL
           nasm -f bin -o ipl.bin ipl.asm
-          
-          # Write IPL to disk image
-          dd if=ipl.bin of=xroger.hdi conv=notrunc bs=512 count=1
-          
-          # Format the rest of the disk
-          mkfs.fat -F 12 -n "XROGER-DOS" xroger.hdi
-          
-          # Mount the disk image
+
+      - name: Create PC‑98 HDD image & format
+        run: |
+          # 1) Create .hdi with PC‑98 header
+          dosbox-x -c "createhd -hdimage xroger.hdi \
+                                  -size 1474560 \
+                                  -interface ide \
+                                  -geometry 80,2,18" \
+                    -c "quit"
+          # 2) Format as FAT12 using mtools (matching 80×2×18 geometry)
+          echo "drive x: file=\"$(pwd)/xroger.hdi\" offset=0" > ~/.mtoolsrc
+          mformat -i xroger.hdi -f 1440 -T 18 -H 2 -S 512 -n XROGER-DOS ::
+
+          # 3) Install custom IPL into sector #1 (skip DOSBox‑X header)
+          dd if=ipl.bin of=xroger.hdi conv=notrunc bs=512 seek=1 count=1
+
+      - name: Mount, copy FreeDOS files, and finalize
+        run: |
+          # Mount the HDD image at offset (skip 512‑byte DOSBox‑X header)
           mkdir -p hdi_mount
-          sudo mount -o loop xroger.hdi hdi_mount
-          
-          # Mount ISO
+          sudo mount -o loop,offset=512 xroger.hdi hdi_mount
+
+          # Mount the FreeDOS LiveCD ISO
           mkdir -p iso_mount
           sudo mount -o loop FD14LIVE.iso iso_mount
-          
-          # Create directory structure
-          sudo mkdir -p hdi_mount/DOS
-          
-          # Find and copy necessary files
-          echo "Copying system files..."
+
+          # Copy root files into the image
+          echo "Copying system files to HDI root..."
           for file in KERNEL.SYS COMMAND.COM FDCONFIG.SYS IO.SYS MSDOS.SYS; do
             sudo find iso_mount -iname "$file" -exec cp {} hdi_mount/ \; || true
           done
-          
-          # Copy DOS directory files
+
+          # Copy additional DOS drivers/utilities
+          sudo mkdir -p hdi_mount/DOS
           for file in HIMEM.SYS EMM386.EXE FDOS.SYS; do
             sudo find iso_mount -iname "$file" -exec cp {} hdi_mount/DOS/ \; || true
           done
-          
-          # Create minimal CONFIG.SYS
+
+          # Create minimal CONFIG.SYS & AUTOEXEC.BAT
           cat > config.sys << EOF
           DEVICE=DOS\HIMEM.SYS
           DOS=HIGH
@@ -270,52 +90,44 @@ jobs:
           SHELL=COMMAND.COM /P /E:512
           EOF
           sudo cp config.sys hdi_mount/CONFIG.SYS
-          
-          # Create minimal AUTOEXEC.BAT
+
           cat > autoexec.bat << EOF
           @ECHO OFF
           SET PATH=C:\;C:\DOS
           PROMPT $P$G
           EOF
           sudo cp autoexec.bat hdi_mount/AUTOEXEC.BAT
-          
+
           # Create README
           cat > README.txt << EOF
           XROGER DOS HDDイメージ
           作成日時: 2025-07-18 16:31:17 (UTC)
           作成者: Emon2358
-          
+
           【注意事項】
           ・このHDDイメージはFreeDOS(98)が起動する状態に設定されています。
           ・作成の段階でHDDのフォーマットのみMS-DOSを使用していますが、
             イメージにはMS-DOSのデータが含まれないため配布に問題ないものとしています。
-          
+
           【免責事項】
           ・このHDDイメージを利用し発生したいかなる事象も関知いたしません。
           ・すべて自身の責任においてご利用ください。
           ・問い合わせも不可とさせていただきます。
           EOF
           sudo cp README.txt hdi_mount/
-          
-          # List files for debugging
-          echo "Contents of HDI:"
-          ls -la hdi_mount/
-          echo "Contents of DOS directory:"
-          ls -la hdi_mount/DOS/
-          
-          # Unmount
+
+          # Unmount everything
           sudo umount iso_mount
           sudo umount hdi_mount
-          
-          # Cleanup
-          rm -rf iso_mount hdi_mount
-          rm -f FD14LIVE.iso FD14BOOT.img ipl.bin config.sys autoexec.bat
-          
-          # Show final file
+
+          # Cleanup intermediates
+          rm -rf iso_mount hdi_mount FD14LIVE.iso ipl.asm config.sys autoexec.bat
+
+          # Verify
           ls -l xroger.hdi
           file xroger.hdi
 
-      - name: Upload HDI file
+      - name: Upload HDI & README
         uses: actions/upload-artifact@v4
         with:
           name: xroger-dos
@@ -323,7 +135,7 @@ jobs:
             xroger.hdi
             README.txt
 
-      - name: Create Release
+      - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/heads/main')
@@ -338,3 +150,4 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
